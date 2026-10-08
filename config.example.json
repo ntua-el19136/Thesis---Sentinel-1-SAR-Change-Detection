@@ -1,0 +1,46 @@
+{
+  "data": {
+    "before_dir": "data/before",
+    "after": "data/after/after.mat",
+    "bitemporal_before": "data/before/before_selected.mat",
+    "image_key": "croppedImg"
+  },
+  "output_root": "outputs",
+  "run_name": "experiment_01",
+  "epochs": 50,
+  "epoch_start": 1,
+  "epoch_end": 50,
+  "ground_truth": {
+    "reference_tif": "data/reference.tif",
+    "reference_mat": "data/before/before_selected.mat",
+    "aoi_vector": "data/aoi.geojson",
+    "event_vector": "data/events.geojson",
+    "label_field": "notation",
+    "positive_labels": [
+      "affected"
+    ],
+    "ignore_labels": [
+      "uncertain"
+    ]
+  },
+  "parameters": {
+    "shared": {
+      "BASE": 32,
+      "PATCH": 256,
+      "STRIDE": 128,
+      "NUM_WORKERS": 0
+    },
+    "spatial_split": {
+      "PATCH_SIZE": 256,
+      "BUFFER_PIXELS": 128,
+      "MIN_REGION_WIDTH": 512,
+      "SEARCH_STEP": 8,
+      "LABEL_BLOCK_SIZE": 256
+    },
+    "unsupervised": {},
+    "supervised_bitemporal": {},
+    "supervised_multitemporal": {},
+    "semisupervised_bitemporal": {},
+    "semisupervised_multitemporal": {}
+  }
+}
