@@ -4,7 +4,11 @@ Example code accompanying **Mapping Floods and Burned Areas Using Sentinel-1: De
 
 Greek thesis title: «Χαρτογράφηση πλημμυρών και καμένων εκτάσεων με Sentinel-1: Ανάπτυξη ενιαίου πλαισίου για τη σύγκριση αρχιτεκτονικών και στρατηγικών μάθησης συνελικτικών νευρωνικών δικτύων».
 
-The repository contains 18 pipeline scripts and two shared helpers. It adapts the supplied research scripts to explicit input paths and a common run configuration. No observations, study areas, ground-truth datasets or trained weights are distributed. The implementations were derived from a burned-area experiment; generic paths and labels do not establish experimental validity on floods or other areas.
+This repository provides generalized, reusable versions of the actual research code developed and used for the **flood and burned-area experiments** in the thesis. It presents the common framework for comparing convolutional architectures, learning strategies and temporal inputs, with configurable paths and consistent interfaces for use with other datasets.
+
+The package contains **18 pipeline scripts**, two shared helpers and optional software tests. It is a representative public implementation of the research workflow, rather than a complete archive of every case-specific script or historical experiment. The original observations, numerical ground-truth datasets and trained weights are not distributed. Selected PNG figures from the fire experiment are included at the end of this README to illustrate the workflow and its outputs.
+
+The research experiments and the checks of this public package have different scopes: the thesis reports experiments on real flood and fire data; this generalized release has been checked end to end on small synthetic CPU inputs. Details are recorded in [VERIFICATION.md](VERIFICATION.md).
 
 ## Setup
 
@@ -35,9 +39,82 @@ Copy `config.example.json` to `config.json` and set the paths. Every relative pa
 | `ground_truth.aoi_vector` | Polygon or MultiPolygon layer with a CRS defining the area of interest. |
 | `ground_truth.event_vector` | Polygon layer with a CRS and the configured label field. `positive_labels` denotes changed areas; `ignore_labels` excludes uncertain areas. Matching strips whitespace and ignores case. |
 
-All acquisitions must have the same dimensions, pixel alignment, crop, orientation, polarization order and consistent SAR preprocessing/radiometric representation. Calibration, terrain correction, co-registration and MAT v7.3 conversion are upstream responsibilities. The scripts do not convert between linear power and dB. A MAT contains no georeferencing; equal dimensions and reference correlation do not prove co-registration of the other dates. Inspect alignment yourself.
+All acquisitions must have the same dimensions, pixel alignment, crop, orientation, polarization order and consistent SAR value representation. Perform the geospatial preparation below before running the Python pipeline. The scripts do not perform terrain correction, resample acquisitions or convert between linear values and dB. A MAT contains no georeferencing; equal dimensions and reference correlation do not prove co-registration of the other dates.
 
-The reference check uses full arrays, tests both TIFF band orders and requires mean correlation at least 0.85 and each channel at least 0.75 by default. It does not resample misaligned inputs. Nonfinite MAT values are rejected. Valid reference pixels inside the AOI, excluding ignored polygons, define validity. Positive polygons receive 1; all remaining valid pixels receive 0, including unlisted event labels. Use `ignore_labels` for every class that must not become negative. Ignore takes precedence over positive. Missing event coverage is therefore **not** automatically unknown. Both classes must exist. Inspect the ground-truth preview and report before continuing.
+The reference check tests both TIFF band orders using full arrays and requires a mean channel correlation of at least 0.85 and an individual channel correlation of at least 0.75 by default. Nonfinite MAT values are rejected. Keep a georeferenced reference TIFF for the exact crop represented by its matching MAT, including the correct crop transform.
+
+## Data preprocessing: from Sentinel-1 products to model inputs
+
+The procedure below follows **Chapter 3, Sections 3.1 and 3.4-3.6 of the thesis**, particularly Table 3.4 and Figure 3.7. The same Sentinel-1 preprocessing workflow was used for both the flood and fire experiments. The SNAP and MATLAB stages are performed before the Python scripts in this repository.
+
+### 1. Select and organize the acquisitions
+
+Obtain Sentinel-1 **IW acquisitions with both VH and VV polarizations** from Copernicus Browser. Figure 3.7 identifies the input products as Sentinel-1 GRD. Select genuinely pre-event observations and one suitable post-event observation covering the same area. Keep the AFTER acquisition fixed when comparing bitemporal and multitemporal methods on a given event; use the same selected BEFORE for both bitemporal methods.
+
+The thesis used 13 BEFORE acquisitions and one fixed AFTER per case study. This public package accepts a configurable number of BEFORE acquisitions, with at least two required for the complete workflow. Keep only the intended BEFORE MAT files in `data.before_dir` and store the AFTER file separately.
+
+### 2. Import and inspect the products in ESA SNAP
+
+Open each Sentinel-1 product in SNAP and inspect the available amplitude bands to confirm that the product and both polarizations loaded correctly. As described in the thesis, this visual inspection is a content check, not an additional transformation of the pixel values.
+
+### 3. Apply Range-Doppler Terrain Correction
+
+For each acquisition, open **Radar → Geometric → Terrain Correction → Range-Doppler Terrain Correction** and use a consistent target grid across the time series.
+
+| Setting | Configuration documented in the thesis |
+|---|---|
+| Geometric correction | Range-Doppler Terrain Correction |
+| Map projection | WGS 84 / UTM zone 34N, **EPSG:32634**, for the thesis study areas |
+| Final grid spacing | **10 m** in the final datasets |
+| Mask out areas without elevation | **Disabled** |
+| Retained polarizations | **VH and VV** |
+| Export format | **GeoTIFF-BigTIFF** |
+
+For another geographic region, choose a suitable projected CRS and use it consistently for every acquisition, reference raster and vector layer. The final acquisitions must agree in pixel size, grid origin, spatial extent and orientation; matching the CRS alone is insufficient.
+
+The thesis does not provide a complete SNAP processing graph or explicit DEM/resampling-kernel settings. Those details should be recorded for a new dataset; they cannot be reconstructed exactly from the text. Additional calibration, orbit, noise-removal or speckle-filtering steps are not specified in the cited workflow and are therefore not presented here as steps performed in the thesis.
+
+### 4. Apply the same spatial crop in MATLAB
+
+Import the terrain-corrected GeoTIFF-BigTIFF files into MATLAB and crop the study area using the **same geographic geometry for every acquisition**. Apply identical row/column bounds only after confirming that the rasters share the same grid. Keep a georeferenced TIFF of the cropped reference with its updated spatial transform; cropping a matrix without updating its georeferencing is insufficient for ground-truth rasterization.
+
+Store each cropped acquisition as a `single` array named `croppedImg`, with shape **H × W × 2** and channel order **VH, VV**. Once the two cropped band matrices have been correctly identified and aligned, the export convention is:
+
+```matlab
+% croppedVH and croppedVV are the aligned, cropped polarization bands.
+croppedImg = cat(3, single(croppedVH), single(croppedVV));
+save('before_selected.mat', 'croppedImg', '-v7');
+```
+
+Repeat for every BEFORE and the fixed AFTER acquisition, using distinct filenames. The explicit `-v7` option above is a compatibility choice for this repository's SciPy MAT reader; the thesis specifies the variable name, type and shape, not the MAT serialization version. HDF5/v7.3 MAT files are not supported by these loaders. Check the MAT size limit when exporting very large crops.
+
+Do not normalize each image using its whole-scene statistics during export. Preserve consistent SAR values in the MAT files and let the training scripts fit normalization on the training region. The loaders transpose `(H, W, 2)` to `(2, H, W)` internally.
+
+### 5. Prepare the ground-truth reference
+
+Use an independent, authoritative reference product, such as the **Copernicus Emergency Management Service vector products** used in the thesis. Read the product's class definitions and select **definite changed/damaged pixels** as the positive class: the labels must indicate a confirmed occurrence of the target phenomenon, rather than a possible or ambiguous change. Interpret “damaged” according to the chosen task and reference-product semantics; do not combine categories merely because their names sound similar.
+
+Define a binary reference and a separate validity mask:
+
+| Pixel status | Representation |
+|---|---|
+| Confirmed target change/damage within valid reference coverage | `ground_truth = 1`, `valid_mask = 1` |
+| Valid, mapped background outside the selected definite-change class | `ground_truth = 0`, `valid_mask = 1` |
+| Outside mapped coverage, invalid SAR pixels or unresolved reference labels | `valid_mask = 0`; excluded from losses and metrics |
+
+Use the **official mapped AOI**, rather than treating the absence of polygons outside that coverage as confirmed background. Reproject vectors to the reference raster's CRS, repair invalid geometries and rasterize directly on the same cropped grid as the SAR inputs. The thesis uses **`ALL_TOUCHED=False`**, so polygon membership is based on pixel centres.
+
+Set `ground_truth.label_field` and `ground_truth.positive_labels` to the actual field and labels of your product. Supply the AOI polygons through `ground_truth.aoi_vector` and the event polygons through `ground_truth.event_vector`. If multiple source layers cover the study area, prepare a combined event layer with a consistent label field and an AOI layer containing the intended coverage. Separate input/reference preparation from model predictions; predictions must not be used to define ground truth.
+
+The generic helper assigns zero to all remaining valid pixels, including unlisted event labels. Use `ground_truth.ignore_labels` for labels that cannot be treated as confirmed background. Resolve contradictory or overlapping classes according to the reference product before rasterization; in this helper, configured ignore polygons exclude overlapping pixels. This generic rule must be taken into account when preparing a reference layer with its own class-priority rules.
+
+Run `create_ground_truth.py`, then inspect the preview, validity mask and verification report. Confirm that boundaries align with the SAR reference and that positive, negative and excluded areas have the intended meaning. The MAT stores binary labels plus masks; the exported ground-truth TIFF uses **0 = unchanged, 1 = changed, 255 = ignored**.
+
+### 6. Freeze the spatial split, then normalize during training
+
+Create and inspect the buffered spatial split with `create_spatial_split.py` before fitting any model. Reuse that split across all five methods for the same study area. Check that SAR arrays, ground truth and split masks have identical dimensions and correspondence pixel by pixel.
+
+As described in Section 3.4.4, normalization is performed in the **training code**, not in SNAP: compute the 1st and 99th percentiles for each acquisition/channel from `train_pool` pixels, clip to that range and standardize using the clipped training values' mean and standard deviation. Save those statistics and reuse them for the corresponding inference inputs. Validation/test pixels must not contribute to fitting these statistics. The AE AFTER-specific normalization and baseline rules are detailed below.
 
 ## Shared experimental protocol
 
@@ -113,7 +190,7 @@ Defaults are retained from the source algorithms: BASE 32, PATCH 256; AE 8,000 s
 | `<method>/predictions/<run_name>/` | Full-scene probability MATs and prediction hashes. All probability maps use `prob`; AE additionally records baseline mode and epoch metadata. |
 | `<method>/results/<run_name>/` | Validation search, selected configuration, held-out metrics, final prediction, full-AOI metrics and confusion maps. AE freeze: `frozen_abs_configuration.json`; test: `abs_final_metrics.json`. |
 
-Training refuses to overwrite a run directory. Ground truth and split refuse nonempty output directories because they are shared by every method/run under that `output_root`. Choose a new output root for a new preprocessing experiment. Input, split, ground-truth, checkpoint, baseline and prediction checks detect important mismatches; they are consistency checks, not a security boundary against deliberate manifest edits. Keep complete run folders together. Paths in generated private run metadata may be absolute; generated outputs are excluded from this source distribution and should be reviewed before sharing.
+Training refuses to overwrite a run directory. Ground truth and split refuse nonempty output directories because they are shared by every method/run under that `output_root`. Choose a new output root for a new preprocessing experiment. Input, split, ground-truth, checkpoint, baseline and prediction checks detect important mismatches; they are consistency checks, not a security boundary against deliberate manifest edits. Keep complete run folders together. Paths in generated private run metadata may be absolute; numerical run outputs are excluded from this distribution. Only the explicitly selected illustrative PNGs in `docs/images/` are included.
 
 For an interrupted run, use the same config and original run directory:
 
@@ -127,4 +204,43 @@ Last-checkpoint names are `supervised_last.pt`, `mean_teacher_last.pt` and `ae_l
 
 The latest supplied five evaluators were used, including their full-AOI metrics/confusion maps and ABS-compatible AE evaluation. Older evaluator variants were not restored. CNN architectures, sampling, losses, EMA and numerical defaults remain based on the supplied scripts. Changes cover configurable paths/date counts, consistent run selection, diagnostics, provenance checks, overwrite/frozen-selection guards, GeoTIFF block profiles and runtime compatibility. Ground-truth generation is a larger rewrite: explicit vector labels/AOI, dynamic CRS and reference checks replace case-specific inputs. It needs visual checking on each real dataset and uses full-array memory.
 
-See `VERIFICATION.md` for the checks actually performed and their limits. No thesis scores are reproduced or claimed here. Real-data end-to-end validation, realistic resource sizing and GPU execution remain necessary before using this package for reported scientific results. These scripts are command-line entry points, not a supported importable API. No author, contact or license has been inferred; choose an appropriate license before public distribution.
+See `VERIFICATION.md` for the checks actually performed and their limits. The illustrative figures below are historical thesis outputs, not results of the synthetic software checks. No numerical thesis scores are reproduced by those checks. Real-data end-to-end validation, realistic resource sizing and GPU execution remain necessary before using this package for reported scientific results. These scripts are command-line entry points, not a supported importable API. A license is not included; select the appropriate terms before public distribution.
+
+
+## Illustrative outputs from the thesis
+
+The following figures are selected examples from the **fire experiment**. They provide a visual explanation of how the reference labels, spatial partitions and prediction errors relate to one another. They are included for interpretation of the research workflow; the underlying SAR arrays, numerical reference masks and trained weights are not distributed. Although the research framework covers both flood and fire experiments, the four examples shown here all concern the fire case.
+
+### Ground truth
+
+![Fire ground-truth preview showing valid unburned pixels, burned area and ignored pixels](docs/images/fire_ground_truth.png)
+
+**Figure 1. Verified fire ground truth on the Sentinel-1 grid.** The confirmed burned area is the positive class, while valid unburned pixels form the negative class. Pixels outside valid reference coverage are ignored. In this particular PNG, display values are **0 = unburned, 1 = burned and 2 = ignored**; the value 2 is a visualization convention, not an additional model class or the GeoTIFF nodata value.
+
+### Spatial split
+
+![Fire spatial split showing labeled training, unlabeled training, validation, test and buffer regions](docs/images/fire_spatial_split.png)
+
+**Figure 2. Buffered spatial partition of the same area.** Labeled and unlabeled pixels belong to a common training pool; validation and held-out test occupy separate geographic regions. Buffer strips separate the major partitions. The targets are 60% training, 20% validation and 20% test among usable pixels, with approximately 20% of the training pool labeled. The figure helps distinguish the labeled/unlabeled subdivision from the train/validation/test separation.
+
+### Results on the held-out test region
+
+![Bitemporal Mean Teacher fire confusion map restricted to the held-out test region](docs/images/fire_results_held_out_test.png)
+
+**Figure 3. Bitemporal semisupervised Mean Teacher results within the held-out test region.** Only pixels belonging to the designated test region are evaluated in this view. Gray areas include pixels outside that region and must not be interpreted as correct negative predictions. The map highlights correctly detected change, false alarms and missed change within the spatially held-out area.
+
+### Results across the full AOI
+
+![Bitemporal Mean Teacher fire confusion map across the full valid area of interest](docs/images/fire_results_full_aoi.png)
+
+**Figure 4. Full-AOI view of the same method's prediction.** This broader view illustrates the spatial distribution of detections and errors throughout the valid mapped area. It includes training, validation, test and buffer regions and is therefore a **descriptive visualization, not a held-out generalization result**.
+
+The two result maps use the same legend:
+
+| Colour | Meaning |
+|---|---|
+| Yellow | True positive (TP): correctly detected change |
+| White | True negative (TN): correctly identified unchanged pixel |
+| Red | False positive (FP): false alarm |
+| Blue | False negative (FN): missed change |
+| Light gray | Ignored pixel or pixel outside the displayed evaluation region |
